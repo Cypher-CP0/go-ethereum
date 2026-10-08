@@ -19,6 +19,7 @@ package core
 import (
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
@@ -130,6 +131,87 @@ func TestTxIndexer(t *testing.T) {
 			verify(t, db, blocks, c.tails[i])
 		}
 		db.Close()
+	}
+}
+
+// TestArchiveTxIndexerRestart verifies that reducing transaction retention on a
+// path archive node removes old lookup entries without removing historical state.
+func TestArchiveTxIndexerRestart(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := crypto.PubkeyToAddress(key.PublicKey)
+	genesis := &Genesis{
+		Config:  params.TestChainConfig,
+		Alloc:   types.GenesisAlloc{address: {Balance: big.NewInt(1000000000000000000)}},
+		BaseFee: big.NewInt(params.InitialBaseFee),
+	}
+	engine := ethash.NewFaker()
+	_, blocks, _ := GenerateChainWithGenesis(genesis, engine, 16, func(i int, gen *BlockGen) {
+		tx, err := types.SignTx(types.NewTransaction(uint64(i), common.HexToAddress("0xdeadbeef"), big.NewInt(1000), params.TxGas, big.NewInt(10*params.InitialBaseFee), nil), types.HomesteadSigner{}, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gen.AddTx(tx)
+	})
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	config := DefaultConfig().WithStateScheme(rawdb.PathScheme).WithArchive(true)
+	config.StateHistory = 16
+	config.TxLookupLimit = 0
+	config.TrieJournalDirectory = t.TempDir()
+	chain, err := NewBlockChain(db, genesis, engine, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if chain != nil {
+			chain.Stop()
+		}
+	}()
+	if n, err := chain.InsertChain(blocks); err != nil {
+		t.Fatalf("insert block %d: %v", n, err)
+	}
+	waitForTail := func(want uint64) {
+		t.Helper()
+		timeout := time.NewTimer(10 * time.Second)
+		defer timeout.Stop()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if tail := chain.txIndexer.tail.Load(); tail != nil && *tail == want && chain.txIndexer.head.Load() == 16 {
+				verify(t, db, blocks, want)
+				return
+			}
+			select {
+			case <-timeout.C:
+				t.Fatalf("transaction index did not reach tail %d", want)
+			case <-ticker.C:
+			}
+		}
+	}
+	waitForTail(0)
+	chain.Stop()
+
+	config.TxLookupLimit = 4
+	chain, err = NewBlockChain(db, genesis, engine, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTail(13)
+	state, err := chain.StateAt(blocks[0].Root(), blocks[0].Number(), blocks[0].Time())
+	if err != nil {
+		t.Fatalf("historical state outside the transaction window: %v", err)
+	}
+	if nonce := state.GetNonce(address); nonce != 1 {
+		t.Fatalf("historical nonce = %d, want 1", nonce)
+	}
+	if err := state.Error(); err != nil {
+		t.Fatalf("read historical state: %v", err)
 	}
 }
 

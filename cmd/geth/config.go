@@ -17,7 +17,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -47,6 +46,7 @@ import (
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/naoina/toml"
+	"github.com/naoina/toml/ast"
 	"github.com/urfave/cli/v2"
 )
 
@@ -112,19 +112,34 @@ type gethConfig struct {
 	Node     node.Config
 	Ethstats ethstatsConfig
 	Metrics  metrics.Config
+
+	// Records explicit transaction retention in the config file, including a
+	// value equal to the default. This is not part of the serialized config.
+	transactionHistorySet bool
 }
 
 func loadConfig(file string, cfg *gethConfig) error {
-	f, err := os.Open(file)
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	err = tomlSettings.NewDecoder(bufio.NewReader(f)).Decode(cfg)
+	table, err := toml.Parse(data)
+	if err != nil {
+		return err
+	}
+	err = tomlSettings.UnmarshalTable(table, cfg)
 	// Add file name to errors that have a line number.
 	if _, ok := err.(*toml.LineError); ok {
 		err = errors.New(file + ", " + err.Error())
+	}
+	if err == nil {
+		eth, _ := table.Fields["Eth"].(*ast.Table)
+		if value, ok := table.Fields["Eth"].(*ast.KeyValue); ok {
+			eth, _ = value.Value.(*ast.Table) // Inline table.
+		}
+		if eth != nil {
+			_, cfg.transactionHistorySet = eth.Fields["TransactionHistory"]
+		}
 	}
 	return err
 }
@@ -174,7 +189,7 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 		utils.Fatalf("Failed to set account manager backends: %v", err)
 	}
 
-	utils.SetEthConfig(ctx, stack, &cfg.Eth)
+	utils.SetEthConfig(ctx, stack, &cfg.Eth, cfg.transactionHistorySet)
 	if ctx.IsSet(utils.EthStatsURLFlag.Name) {
 		cfg.Ethstats.URL = ctx.String(utils.EthStatsURLFlag.Name)
 	}

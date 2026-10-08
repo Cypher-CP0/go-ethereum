@@ -325,7 +325,7 @@ var (
 	}
 	TransactionHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.transactions",
-		Usage:    "Number of recent blocks to maintain transactions index for (default = about one year, 0 = entire chain)",
+		Usage:    "Number of recent blocks to maintain transactions index for (default = about one year, or entire chain in archive mode; 0 = entire chain)",
 		Value:    ethconfig.Defaults.TransactionHistory,
 		Category: flags.StateCategory,
 	}
@@ -1742,7 +1742,8 @@ func setRequiredBlocks(ctx *cli.Context, cfg *ethconfig.Config) {
 }
 
 // SetEthConfig applies eth-related command line flags to the config.
-func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
+// transactionHistorySet indicates explicit transaction retention in the config file.
+func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config, transactionHistorySet bool) {
 	// Avoid conflicting network flags
 	flags.CheckExclusive(ctx, MainnetFlag, DeveloperFlag, SepoliaFlag, HoodiFlag, OverrideGenesisFlag)
 	flags.CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
@@ -1854,14 +1855,14 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	}
 	// Parse transaction history flag, if user is still using legacy config
 	// file with 'TxLookupLimit' configured, copy the value to 'TransactionHistory'.
-	if cfg.TransactionHistory == ethconfig.Defaults.TransactionHistory && cfg.TxLookupLimit != ethconfig.Defaults.TxLookupLimit {
+	if !transactionHistorySet && cfg.TransactionHistory == ethconfig.Defaults.TransactionHistory && cfg.TxLookupLimit != ethconfig.Defaults.TxLookupLimit {
 		log.Warn("The config option 'TxLookupLimit' is deprecated and will be removed, please use 'TransactionHistory'")
 		cfg.TransactionHistory = cfg.TxLookupLimit
 	}
 	if ctx.IsSet(TransactionHistoryFlag.Name) {
 		cfg.TransactionHistory = ctx.Uint64(TransactionHistoryFlag.Name)
 	}
-	if cfg.NoPruning {
+	if cfg.NoPruning && !transactionHistorySet && !ctx.IsSet(TransactionHistoryFlag.Name) {
 		if cfg.TransactionHistory != 0 {
 			cfg.TransactionHistory = 0
 			log.Warn("Disabled transaction unindexing for archive node")

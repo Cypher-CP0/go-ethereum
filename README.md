@@ -138,6 +138,23 @@ export your existing configuration:
 $ geth --your-favourite-flags dumpconfig
 ```
 
+Archive mode retains the entire available transaction lookup index by default. You can
+explicitly set `--history.transactions` to retain only a recent window, independently of
+the historical state retained by `--history.state`. For example:
+
+```shell
+$ geth --state.scheme=path --gcmode=archive --history.state=250000 --history.transactions=50000
+```
+
+The equivalent TOML settings belong in the `[Eth]` section: `StateScheme = "path"`,
+`NoPruning = true`, `StateHistory = 250000`, and `TransactionHistory = 50000`.
+An explicit `TransactionHistory` value is honored even when it equals the normal full-node
+default, and the command-line flag overrides the TOML setting. Zero means unlimited history.
+On restart, an existing larger index is reduced through normal transaction unindexing.
+Transaction-by-hash queries, including `eth_getTransactionByHash`, `eth_getTransactionReceipt`,
+and `debug_traceTransaction`, may be unavailable outside the retained transaction window,
+even when the corresponding historical state is still available.
+
 #### Docker quick start
 
 One of the quickest ways to get Ethereum up and running on your machine is by using
